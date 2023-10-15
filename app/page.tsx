@@ -1,113 +1,248 @@
-import Image from 'next/image'
+'use client';
+
+import { useEffect, useState } from 'react';
+import propsJson from '@/props.json';
+import alternatesJson from '@/alternates.json';
+import { PropType, MarketType, AltType, CachedFilterType } from '@/types';
+import Table from '@/components/table';
+import FilterActions from '@/components/filter-actions';
 
 export default function Home() {
+  const [markets, setMarkets] = useState<MarketType[]>([]);
+  const [filteredMarkets, setFilteredMarkets] = useState<MarketType[]>([]);
+  const [selectedMarkets, setSelectedMarkets] = useState<MarketType[]>([]);
+  const [search, setSearch] = useState('');
+  const [selectedFilters, setSelectedFilters] = useState<
+    Map<string, Set<string>>
+  >(
+    new Map([
+      ['position', new Set<string>()],
+      ['statType', new Set<string>()],
+      ['marketStatus', new Set<string>()],
+    ])
+  );
+
+  /**
+   * The purpose of this useEffect is to set the stage for the app.
+   * Based on the contents of the props and alternates json files,
+   * we need to set the market rows for the display table.
+   */
+  useEffect(() => {
+    let altsByUniqueKey = new Map<string, AltType[]>();
+
+    // based on a unique key (player Id and statTypeId), we get a list of alternates that will be used when calculating the initial suspended value of each market
+    alternatesJson.forEach((alt: AltType) => {
+      const uniqueKey = alt.playerId + '' + alt.statTypeId;
+
+      if (altsByUniqueKey.has(uniqueKey)) {
+        let alts = altsByUniqueKey.get(uniqueKey) ?? [];
+        alts.push(alt);
+        alts.sort((a, b) => a.line - b.line);
+
+        altsByUniqueKey.set(uniqueKey, alts);
+      } else {
+        altsByUniqueKey.set(uniqueKey, [alt]);
+      }
+    });
+
+    /**
+     * Calculates the suspended value for a given market line
+     * @param alts corresponding list of alternates for a given market line
+     * @param prop the prop in question
+     * @returns boolen - whether or not a market line is suspended
+     */
+    const isSuspended = (alts: AltType[] | undefined, prop: PropType) => {
+      if (!alts) return true;
+
+      if (prop.marketSuspended) return true;
+
+      const optimalLine = alts.find((alt) => prop.line === alt.line);
+
+      if (!optimalLine) return true;
+
+      return (
+        optimalLine.underOdds < 0.4 &&
+        optimalLine.overOdds < 0.4 &&
+        optimalLine.pushOdds < 0.4
+      );
+    };
+
+    /**
+     * Takes in a PropType and spits out a MarketType. Adding suspended, low, high, and uniqueKey (playerId and statTypeId) values
+     * @param prop given prop
+     * @returns returns a prop converted into a market
+     */
+    const convertPropToMarket = (prop: PropType) => {
+      const uniqueKey = prop.playerId + '' + prop.statTypeId;
+
+      const alts = altsByUniqueKey.get(uniqueKey);
+
+      let returnVal: MarketType = {
+        ...prop,
+        suspended: isSuspended(alts, prop),
+        low: alts ? alts[0].line : 0,
+        high: alts ? alts[alts.length - 1].line : 0,
+        uniqueKey: uniqueKey,
+      };
+
+      return returnVal;
+    };
+
+    setMarkets(propsJson.map((prop) => convertPropToMarket(prop)));
+  }, []);
+
+  /**
+   * This useEffect handles setting the filtered market value.
+   * The dependency array is comprised of market, search and selectedFilters variables - all necessary for the filtering
+   */
+  useEffect(() => {
+    setFilteredMarkets(
+      markets
+        // this filter is for filtering by search value on name and team name columns
+        .filter(
+          (market) =>
+            market.playerName
+              .toLowerCase()
+              .includes(search.toLowerCase().trim()) ||
+            market.teamNickname
+              .toLowerCase()
+              .includes(search.toLowerCase().trim())
+        )
+        // this filter is by player position
+        .filter((market) => {
+          if (selectedFilters.get('position')?.size === 0) return true;
+
+          return selectedFilters.get('position')?.has(market.position);
+        })
+        // this filter is by player stat type
+        .filter((market) => {
+          if (selectedFilters.get('statType')?.size === 0) return true;
+
+          return selectedFilters.get('statType')?.has(market.statType);
+        })
+        // this filter is by market status
+        .filter((market) => {
+          if (selectedFilters.get('marketStatus')?.size === 0) return true;
+
+          return (
+            (selectedFilters.get('marketStatus')?.has('suspended') &&
+              market.suspended) ||
+            (selectedFilters.get('marketStatus')?.has('not suspended') &&
+              !market.suspended)
+          );
+        })
+    );
+  }, [markets, search, selectedFilters]);
+
+  /**
+   * handles the addition or deletion of elements (in selected markets) to their respective key
+   * @param key key to update
+   * @param option option that was clicked
+   */
+  const handleFilterSelect = (key: string, option: string) => {
+    setSelectedFilters((oldSelectedFilters) => {
+      let updateSelectedFilters = new Map(oldSelectedFilters);
+
+      if (!updateSelectedFilters.has(key)) return oldSelectedFilters;
+
+      let updateSet = new Set(updateSelectedFilters.get(key));
+
+      if (updateSet.has(option)) {
+        updateSet.delete(option);
+      } else {
+        updateSet.add(option);
+      }
+
+      updateSelectedFilters.set(key, updateSet);
+
+      return updateSelectedFilters;
+    });
+  };
+
+  /**
+   * Clears the filter sets for each key
+   */
+  const handleClearFilter = () => {
+    setSelectedFilters((oldSelectedFilters) => {
+      let updateSelectedFilters = new Map(oldSelectedFilters);
+
+      updateSelectedFilters.forEach((value, key) => {
+        updateSelectedFilters.set(key, new Set());
+      });
+
+      return updateSelectedFilters;
+    });
+  };
+
+  /**
+   * handles the selection toggling of market rows
+   * @param checked whether or not the market row is selected
+   * @param uniqueKey market row unique key
+   */
+  const handleSelect = (checked: boolean, uniqueKey: string) => {
+    setSelectedMarkets((oldMarkets) => {
+      let updateMarkets = [...oldMarkets];
+
+      if (checked) {
+        let selectedMarket = filteredMarkets.find(
+          (market) => market.uniqueKey === uniqueKey
+        );
+        if (selectedMarket) {
+          updateMarkets.push(selectedMarket);
+        }
+      } else {
+        let selectedIndex = updateMarkets.findIndex(
+          (market) => market.uniqueKey === uniqueKey
+        );
+
+        if (selectedIndex !== -1) {
+          updateMarkets.splice(selectedIndex, 1);
+        }
+      }
+
+      return updateMarkets;
+    });
+  };
+
+  /**
+   * handles the clicking of a button and updating their suspended values
+   * @param action the manual button action clicked
+   */
+  const handleManualUpdate = (action: 'suspend' | 'release') => {
+    selectedMarkets.forEach((market) => {
+      switch (action) {
+        case 'suspend':
+          market.suspended = true;
+          break;
+        case 'release':
+          market.suspended = false;
+          break;
+      }
+    });
+
+    setSelectedMarkets([]);
+    alert('Successfully updated markets!');
+  };
+
   return (
-    <main className="flex min-h-screen flex-col items-center justify-between p-24">
-      <div className="z-10 max-w-5xl w-full items-center justify-between font-mono text-sm lg:flex">
-        <p className="fixed left-0 top-0 flex w-full justify-center border-b border-gray-300 bg-gradient-to-b from-zinc-200 pb-6 pt-8 backdrop-blur-2xl dark:border-neutral-800 dark:bg-zinc-800/30 dark:from-inherit lg:static lg:w-auto  lg:rounded-xl lg:border lg:bg-gray-200 lg:p-4 lg:dark:bg-zinc-800/30">
-          Get started by editing&nbsp;
-          <code className="font-mono font-bold">app/page.tsx</code>
-        </p>
-        <div className="fixed bottom-0 left-0 flex h-48 w-full items-end justify-center bg-gradient-to-t from-white via-white dark:from-black dark:via-black lg:static lg:h-auto lg:w-auto lg:bg-none">
-          <a
-            className="pointer-events-none flex place-items-center gap-2 p-8 lg:pointer-events-auto lg:p-0"
-            href="https://vercel.com?utm_source=create-next-app&utm_medium=appdir-template&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            By{' '}
-            <Image
-              src="/vercel.svg"
-              alt="Vercel Logo"
-              className="dark:invert"
-              width={100}
-              height={24}
-              priority
-            />
-          </a>
-        </div>
+    <main className="h-screen p-5 gap-5 bg-white flex flex-col">
+      <div className="text-xl lg:text-6xl font-bold text-black">
+        Swish Analytics Assessment
       </div>
-
-      <div className="relative flex place-items-center before:absolute before:h-[300px] before:w-[480px] before:-translate-x-1/2 before:rounded-full before:bg-gradient-radial before:from-white before:to-transparent before:blur-2xl before:content-[''] after:absolute after:-z-20 after:h-[180px] after:w-[240px] after:translate-x-1/3 after:bg-gradient-conic after:from-sky-200 after:via-blue-200 after:blur-2xl after:content-[''] before:dark:bg-gradient-to-br before:dark:from-transparent before:dark:to-blue-700 before:dark:opacity-10 after:dark:from-sky-900 after:dark:via-[#0141ff] after:dark:opacity-40 before:lg:h-[360px] z-[-1]">
-        <Image
-          className="relative dark:drop-shadow-[0_0_0.3rem_#ffffff70] dark:invert"
-          src="/next.svg"
-          alt="Next.js Logo"
-          width={180}
-          height={37}
-          priority
-        />
-      </div>
-
-      <div className="mb-32 grid text-center lg:max-w-5xl lg:w-full lg:mb-0 lg:grid-cols-4 lg:text-left">
-        <a
-          href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template&utm_campaign=create-next-app"
-          className="group rounded-lg border border-transparent px-5 py-4 transition-colors hover:border-gray-300 hover:bg-gray-100 hover:dark:border-neutral-700 hover:dark:bg-neutral-800/30"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <h2 className={`mb-3 text-2xl font-semibold`}>
-            Docs{' '}
-            <span className="inline-block transition-transform group-hover:translate-x-1 motion-reduce:transform-none">
-              -&gt;
-            </span>
-          </h2>
-          <p className={`m-0 max-w-[30ch] text-sm opacity-50`}>
-            Find in-depth information about Next.js features and API.
-          </p>
-        </a>
-
-        <a
-          href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          className="group rounded-lg border border-transparent px-5 py-4 transition-colors hover:border-gray-300 hover:bg-gray-100 hover:dark:border-neutral-700 hover:dark:bg-neutral-800/30"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <h2 className={`mb-3 text-2xl font-semibold`}>
-            Learn{' '}
-            <span className="inline-block transition-transform group-hover:translate-x-1 motion-reduce:transform-none">
-              -&gt;
-            </span>
-          </h2>
-          <p className={`m-0 max-w-[30ch] text-sm opacity-50`}>
-            Learn about Next.js in an interactive course with&nbsp;quizzes!
-          </p>
-        </a>
-
-        <a
-          href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template&utm_campaign=create-next-app"
-          className="group rounded-lg border border-transparent px-5 py-4 transition-colors hover:border-gray-300 hover:bg-gray-100 hover:dark:border-neutral-700 hover:dark:bg-neutral-800/30"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <h2 className={`mb-3 text-2xl font-semibold`}>
-            Templates{' '}
-            <span className="inline-block transition-transform group-hover:translate-x-1 motion-reduce:transform-none">
-              -&gt;
-            </span>
-          </h2>
-          <p className={`m-0 max-w-[30ch] text-sm opacity-50`}>
-            Explore the Next.js 13 playground.
-          </p>
-        </a>
-
-        <a
-          href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template&utm_campaign=create-next-app"
-          className="group rounded-lg border border-transparent px-5 py-4 transition-colors hover:border-gray-300 hover:bg-gray-100 hover:dark:border-neutral-700 hover:dark:bg-neutral-800/30"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <h2 className={`mb-3 text-2xl font-semibold`}>
-            Deploy{' '}
-            <span className="inline-block transition-transform group-hover:translate-x-1 motion-reduce:transform-none">
-              -&gt;
-            </span>
-          </h2>
-          <p className={`m-0 max-w-[30ch] text-sm opacity-50`}>
-            Instantly deploy your Next.js site to a shareable URL with Vercel.
-          </p>
-        </a>
-      </div>
+      <FilterActions
+        search={search}
+        setSearch={setSearch}
+        selectedFilters={selectedFilters}
+        handleFilterSelect={handleFilterSelect}
+        handleClearFilter={handleClearFilter}
+        selectedMarkets={selectedMarkets}
+        handleManualUpdate={handleManualUpdate}
+      />
+      <Table
+        filteredMarkets={filteredMarkets}
+        handleSelect={handleSelect}
+        selectedMarkets={selectedMarkets}
+      />
     </main>
-  )
+  );
 }
